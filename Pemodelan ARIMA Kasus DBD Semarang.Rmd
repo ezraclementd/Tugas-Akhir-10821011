@@ -1,0 +1,512 @@
+`---
+title: "Pengolahan Data DBD TA"
+output: word_document
+date: "`r Sys.Date()`"
+---
+
+```{r}
+#Library
+library(readxl)
+library(tseries)
+library(zoo)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(forecast)
+library(FinTS)
+library(tibble)
+library(urca)
+library(writexl)
+```
+
+```{r}
+#Import Dataset
+data <- read_excel("C:/Users/zrclm/Documents/Ezra/Kuliah/Tugas Akhir/Data DBD Kota Semarang/Data DBD 2016-2021 Kota Semarang Adjusted Format.xlsx",
+    sheet = "Transposed")
+
+#Konversi dalam Time Series Dataset
+kecamatan <- c("Banyumanik", "Candisari", "Gajahmungkur", "Gayamsari", "Genuk",
+                     "Gunungpati", "Mijen", "Ngalian", "Pedurungan", "SMG Barat",
+                     "SMG Selatan", "SMG Tengah", "SMG Timur", "SMG Utara",
+                     "Tembalang", "Tugu")
+
+for (name in kecamatan) {
+  var_name <- paste0("ts_", tolower(gsub(" ", "", name)))
+  assign(var_name, ts(data[[name]], start=c(2016,1), frequency=12))
+}
+
+#Memasukkan data time series tiap lokasi dalam 1 list
+ts_list <- lapply(kecamatan, function(name) ts(data[[name]]))
+names(ts_list) <- tolower(gsub(" ", "", kecamatan))
+
+#Long Format
+ts_long <- data %>%
+  mutate(Time = 1:n()) %>%  # asumsi baris merepresentasikan waktu secara berurutan
+  select(Time, all_of(kecamatan)) %>%
+  pivot_longer(cols = -Time, names_to = "Kecamatan", values_to = "Kasus")
+```
+
+```{r}
+#Pembagian Data Train dan Data Test
+ts_split <- list()
+
+for (name in names(ts_list)) {
+  ts_obj <- ts_list[[name]]
+  n <- length(ts_obj)
+  split_index <- 66
+
+  freq <- frequency(ts_obj)
+  start_time <- start(ts_obj)
+
+  # Compute correct time values for splitting
+  train_end_time <- time(ts_obj)[split_index]
+  test_start_time <- time(ts_obj)[split_index + 1]
+
+  # Preserve ts structure using window()
+  train_ts <- window(ts_obj, start = start_time, end = train_end_time)
+  test_ts  <- window(ts_obj, start = test_start_time)
+
+  # Save into list
+  ts_split[[name]] <- list(
+    train = train_ts,
+    test = test_ts
+  )
+}
+```
+
+```{r}
+#EDA
+summary(ts_list$banyumanik)
+
+#Histogram Data
+par(mfrow=c(4,4), mar = c(2, 2, 2, 1))
+for (name in names(ts_list)){
+  hist(ts_list[[name]], xlab = "Number of Cases", main = paste("Histogram of", toupper(name)))
+}
+
+#Mean n Variance
+mean_var <- data.frame(
+  Name = character(),
+  Mean = numeric(),
+  Variance = numeric(),
+  stringsAsFactors = FALSE
+)
+
+for (name in names(ts_list)) {
+  ts_data <- ts_list[[name]]
+  ts_mean <- mean(ts_data, na.rm = TRUE)
+  ts_var <- var(ts_data, na.rm = TRUE)
+  
+  mean_var <- rbind(mean_var, data.frame(Name = name, Mean = ts_mean, Variance = ts_var))
+}
+
+mean_var
+```
+
+
+```{r}
+#Plot Untuk menampilkan 16 plot dalam satu tampilan
+par(mfrow=c(4,4), mar = c(2, 2, 2, 1))
+for (name in names(ts_list)) {
+  
+  plot(ts_list[[name]], main = toupper(name), ylab = "Jumlah Kasus", xlab = "Bulan ke-")
+}
+
+ggplot(ts_long, aes(x = Time, y = Kasus)) +
+  geom_line(color = "steelblue") +
+  facet_wrap(~ Kecamatan, scales = "free_y") +
+  labs(
+       x = "Bulan ke-", y = "Jumlah Kasus") +
+  theme_minimal()
+```
+
+```{r}
+#Pengecekan Kestasioneran
+p_val <- list()
+ts_stationary <- list()
+
+for (name in names(ts_list)) {
+  cat("Checking:", name, "\n")
+  series <- ts_list[[name]]
+  diff_count <- 0
+  
+  repeat {
+    result <- adf.test(series)
+    p_value <- result$p.value
+    cat("  Diff:", diff_count, "| p-value:", round(p_value, 4), "\n")
+    
+    if (p_value < 0.05 || length(series) < 10) break  # stop if stationary or series too short
+    
+    # Apply differencing
+    series <- diff(series)
+    diff_count <- diff_count + 1
+  }
+  
+  # Save results
+  ts_stationary[[name]] <- list(
+    data = series,             # differenced train series
+    differences = diff_count,    # how many differences applied
+    p_value = p_value
+  )
+}
+
+# Extract only the "data" element (the differenced time series)
+ts_data_only <- lapply(ts_stationary, function(x) x$data)
+
+# Determine the shortest series length (for alignment)
+min_len <- min(sapply(ts_data_only, length))
+
+# Trim all series to the same length
+ts_trimmed <- lapply(ts_data_only, function(x) tail(x, min_len))
+
+# Convert to data frame
+df_stationary <- as.data.frame(ts_trimmed)
+
+# Export to Excel
+write_xlsx(df_stationary, "data_stasioner.xlsx")
+```
+
+
+```{r}
+#Pengecekkan Seasonal
+stl_components <- list()
+
+for (name in names(ts_list)) {
+  ts_data <- ts_list[[name]]
+  
+  # Ensure it's a proper ts object with monthly frequency
+  ts_data <- ts(ts_data, frequency = 12)
+
+  # Only proceed if data is long enough and has no missing values
+  if (length(ts_data) >= 24 && all(!is.na(ts_data))) {
+    cat("STL decomposition for:", name, "\n")
+    stl_result <- stl(ts_data, s.window = "periodic")
+    stl_components[[name]] <- stl_result
+  } else {
+    cat("❌ Skipped:", name, "- too short or contains NA\n")
+  }
+}
+```
+
+```{r}
+# Turn off any printing during plotting
+for (name in names(stl_components)) {
+  plot(stl_components[[name]], main = paste("STL Decomposition -", name))
+}
+```
+
+```{r}
+#Pembagian Data Train dan Data Test
+ts_split_stationary <- list()
+
+for (name in names(ts_data_only)) {
+  ts_obj <- ts_data_only[[name]]
+  n <- length(ts_obj)
+  split_index <- 66
+
+  freq <- frequency(ts_obj)
+  start_time <- start(ts_obj)
+
+  # Compute correct time values for splitting
+  train_end_time <- time(ts_obj)[split_index]
+  test_start_time <- time(ts_obj)[split_index + 1]
+
+  # Preserve ts structure using window()
+  train_ts <- window(ts_obj, start = start_time, end = train_end_time)
+  test_ts  <- window(ts_obj, start = test_start_time)
+
+  # Save into list
+  ts_split_stationary[[name]] <- list(
+    train = train_ts,
+    test = test_ts
+  )
+}
+```
+
+```{r}
+#Plot ACF dan PACF Model Manual
+for (name in names(ts_split_stationary)) {
+  ts_data <- ts_split[[name]]$train
+  par(mfrow=c(1,2))
+  acf(ts_data, main = paste("ACF of", name))
+  pacf(ts_data, main = paste("PACF of", name))
+}
+```
+
+```{r}
+#Identifikasi Model
+#Banyumanik :ARMA(0,0)/(1,0)
+#Candisari : ARMA(3,2)
+#Gajahmungkur : ARMA(1,2)
+#Gayamsari : ARMA(1,1)
+#Genuk : ARMA(1,1)
+#Gunungpati : ARMA(1,1)
+#Mijen : ARMA(2,1)
+#Ngalian : ARMA(1,2)
+#Pedurungan : ARMA(3,1)
+#SMG Barat : ARMA(3,1)/(1,1)
+#SMG Selatan : ARMA(1,1)
+#SMG Tengah : ARMA(1,1)
+#SMG Timur : ARMA(1,1)/(1,2)
+#SMG Utara :ARMA(3,1)
+#Tembalang : ARMA() - kureng
+#Tugu : ARMA(1,1)/ARMA(3,1)
+
+#Model Manual
+model_manual <- list(
+  banyumanik    = arima(ts_split_stationary[["banyumanik"]]$train, order = c(1,0,0)),
+  candisari     = arima(ts_split_stationary[["candisari"]]$train, order = c(2,0,2)),
+  gajahmungkur  = arima(ts_split_stationary[["gajahmungkur"]]$train, order = c(0,0,1)),
+  gayamsari     = arima(ts_split_stationary[["gayamsari"]]$train, order = c(1,0,0)),
+  genuk         = arima(ts_split_stationary[["genuk"]]$train, order = c(2,1,1)),
+  gunungpati    = arima(ts_split_stationary[["gunungpati"]]$train, order = c(2,0,2)),
+  mijen         = arima(ts_split_stationary[["mijen"]]$train, order = c(1,1,0)),
+  ngalian       = arima(ts_split_stationary[["ngalian"]]$train, order = c(1,0,0)),
+  pedurungan    = arima(ts_split_stationary[["pedurungan"]]$train, order = c(1,0,0)),
+  smgbarat      = arima(ts_split_stationary[["smgbarat"]]$train, order = c(1,0,0)),
+  smgselatan    = arima(ts_split_stationary[["smgselatan"]]$train, order = c(2,0,1)),
+  smgtengah     = arima(ts_split_stationary[["smgtengah"]]$train, order = c(1,1,1)),
+  smgtimur      = arima(ts_split_stationary[["smgtimur"]]$train, order = c(2,0,1)),
+  smgutara      = arima(ts_split_stationary[["smgutara"]]$train, order = c(1,0,0)),
+  tembalang     = arima(ts_split_stationary[["tembalang"]]$train, order = c(1,0,0)),
+  tugu          = arima(ts_split_stationary[["tugu"]]$train, order = c(1,1,1))
+)
+```
+
+```{r}
+#Model Auto ARIMA
+model_list <- list()
+
+for (name in names(ts_split)) {
+  train_series <- ts_split[[name]]$train
+  model <- auto.arima(train_series)
+  model_list[[name]] <- model
+}
+
+model_orders <- list()
+
+for (name in names(model_list)) {
+  model <- model_list[[name]]
+  order_values <- arimaorder(model)  # returns c(p,d,q)
+  model_orders[[name]] <- order_values
+}
+```
+
+
+```{r}
+#Model SARIMA
+sarima_list <- list()
+for (name in names(ts_split)) {
+  train_series <- ts_split[[name]]$train
+  model_sarima <- auto.arima(train_series, seasonal=TRUE)
+  sarima_list[[name]] <- model_sarima
+}
+
+sarima_order <- list()
+
+for (name in names(sarima_list)) {
+  model <- sarima_list[[name]]
+  arma <- model$arma
+  ns_order <- arimaorder(model)
+  
+  # Forecast on test set
+  fc <- forecast(model, h = length(ts_split[[name]]$test))
+  
+  # Compute forecast accuracy
+  acc <- accuracy(fc, ts_split[[name]]$test)
+  
+  # Save all SARIMA order info + evaluation metrics
+  sarima_order[[name]] <- list(
+    p = ns_order["p"],
+    d = ns_order["d"],
+    q = ns_order["q"],
+    P = arma[3],
+    D = arma[7],
+    Q = arma[4],
+    s = arma[5],
+    AIC  = AIC(model),
+    BIC  = BIC(model),
+    ME   = acc[2, "ME"],
+    RMSE = acc[2, "RMSE"],
+    MAE  = acc[2, "MAE"],
+    MPE  = acc[2, "MPE"],
+    MAPE = acc[2, "MAPE"],
+    MASE = acc[2, "MASE"],
+    ACF1 = acc[2, "ACF1"]
+  )
+}
+
+
+sarima_orders_df <- do.call(rbind, sarima_order)
+rownames(sarima_orders_df) <- NULL
+```
+
+```{r}
+# Initialize list to store all metrics
+model_summary <- list()
+
+for (name in names(model_list)) {
+  model <- model_list[[name]]
+  order <- arimaorder(model)
+  
+  # Forecast on test data
+  test_data <- ts_split[[name]]$test
+  h <- length(test_data)
+  fc <- forecast(model, h = h)
+  
+  # Compute forecast accuracy
+  acc <- accuracy(fc, test_data)
+  
+  # Collect metrics
+  model_summary[[name]] <- data.frame(
+    Location = name,
+    p = order[1],
+    d = order[2],
+    q = order[3],
+    AIC = AIC(model),
+    BIC = BIC(model),
+    ME = acc[2, "ME"],
+    RMSE = acc[2, "RMSE"],
+    MAE = acc[2, "MAE"],
+    MPE = acc[2, "MPE"],
+    MAPE = acc[2, "MAPE"],
+    MASE = acc[2, "MASE"],
+    ACF1 = acc[2, "ACF1"]
+  )
+}
+
+# Combine all into one data frame
+model_orders_df <- do.call(rbind, model_summary)
+rownames(model_orders_df) <- NULL
+
+View(model_orders_df)
+```
+
+```{r}
+# Initialize list to store accuracy metrics for model_manual
+manual_summary <- list()
+
+for (name in names(model_manual)) {
+  model <- model_manual[[name]]
+  order <- arimaorder(model)
+  
+  # Forecast using test data
+  test_data <- ts_split[[name]]$test
+  h <- length(test_data)
+  fc <- forecast(model, h = h)
+  
+  # Compute forecast accuracy
+  acc <- accuracy(fc, test_data)
+  
+  # Store metrics in a data frame
+  manual_summary[[name]] <- data.frame(
+    Location = name,
+    p = order[1],
+    d = order[2],
+    q = order[3],
+    AIC = AIC(model),
+    BIC = BIC(model),
+    ME = acc[2, "ME"],
+    RMSE = acc[2, "RMSE"],
+    MAE = acc[2, "MAE"],
+    MPE = acc[2, "MPE"],
+    MAPE = acc[2, "MAPE"],
+    MASE = acc[2, "MASE"],
+    ACF1 = acc[2, "ACF1"]
+  )
+}
+
+# Combine all into one data frame
+manual_summary_df <- do.call(rbind, manual_summary)
+```
+
+
+```{r}
+# Specify the 4 locations you want to plot
+selected_names <- c("banyumanik", "candisari", "genuk", "gunungpati")  # Replace with actual names from your model_list
+   # 2x2 layout for 4 plots
+
+for (name in selected_names) {
+  test_data <- ts_split[[name]]$test
+  h <- length(test_data)
+
+  # Forecast from AutoARIMA
+  fc_mod <- forecast(model_manual[[name]], h = h)
+
+  # Plot AutoARIMA
+  plot(fc_mod, main = paste("Forecast Comparison:", toupper(name)), ylab = "Cases", xlab = "Time")
+
+  # Add Actual
+  lines(test_data, col = "red", lwd = 2)
+
+  # Add legend
+  legend("topleft", 
+         legend = c("Forecast Value", "Actual"), 
+         col = c("blue", "red"), 
+         lty = c(1, 2, 1), 
+         bty = "n",
+         lwd = 2)
+}
+
+```
+
+```{r}
+#Diagnostic Checking
+arch_results <- list()
+
+diagnostics_summary <- list()
+
+all_param_names <- unique(unlist(
+  lapply(model_manual, function(model) names(coef(model)))
+))
+
+for (name in names(model_manual)) {
+  model <- model_manual[[name]]
+  res <- residuals(model)
+  coef(model)
+  # ARCH test
+  arch <- ArchTest(res, lags = 12)
+  arch_p <- arch$p.value
+  
+  # Ljung-Box test
+  lb <- Box.test(res, lag = 20, type = "Ljung-Box", fitdf = length(model$coef))
+  lb_p <- lb$p.value
+  
+  # Shapiro-Wilk test
+  shapiro <- shapiro.test(res)
+  shapiro_p <- shapiro$p.value
+  
+  # AIC & BIC
+  aic_val <- AIC(model)
+  bic_val <- BIC(model)
+  
+  coef_vals <- coef(model)
+  param_list <- setNames(as.list(rep(NA, length(all_param_names))), all_param_names)
+  param_list[names(coef_vals)] <- coef_vals
+  
+  # Store as a named list (row)
+  diagnostics_summary[[name]] <- c(list(
+    Model = name,
+    ARCH_p = arch_p,
+    LjungBox_p = lb_p,
+    Shapiro_p = shapiro_p,
+    AIC = aic_val,
+    BIC = bic_val
+  ), param_list
+  )
+}
+
+# Convert list of lists to a data frame
+diagnostics_df <- do.call(rbind, lapply(diagnostics_summary, as.data.frame))
+rownames(diagnostics_df) <- NULL
+```
+
+
+```{r}
+for (name in names(model_manual)) {
+  model <- model_manual[[name]]
+  res <- residuals(model)
+  
+  plot( res, main = paste("Residual of:", toupper(name)), ylab = "Residual", xlab = "Time")
+}
+```

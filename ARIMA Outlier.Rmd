@@ -1,0 +1,346 @@
+---
+title: "ARIMA Outlier"
+output: word_document
+date: "2025-07-28"
+---
+
+---
+LIBRARY
+```{r, echo=FALSE}
+library(readxl)
+library(TSA)
+library(forecast)
+library(tseries)
+library(lmtest)
+library(csvread)
+library(ggplot2)
+library(psych)
+library(ggfortify)
+library(CircStats)
+library(MLmetrics)
+library(tidyverse)
+library(tidyr)
+library(dplyr)
+```
+INPUT DATA
+```{r}
+Data_Total <- read_excel("C:/Users/zrclm/Documents/Ezra/Kuliah/Tugas Akhir/Data DBD Kota Semarang/Data DBD 2016-2021 Kota Semarang Adjusted Format.xlsx",
+    sheet = "Outlier")
+ts.Data_Banyumanik <- ts(Data_Total$Banyumanik)
+ts.Data_SMGBarat <- ts(Data_Total$`SMG Barat`)
+```
+STATISTIK
+```{r}
+summary(Data_Total$Banyumanik)
+summary(Data_Total$`SMG Barat`)
+describe(Data_Total$Banyumanik)
+describe(Data_Total$`SMG Barat`)
+```
+PLOT DATA
+```{r}
+ggplot(data = Data_Total, aes(x = Month, y = Banyumanik)) +
+  geom_line(color = '#B2182B', lwd = 0.6) +
+  geom_point(color = '#B2182B') +
+  labs(
+    x = "Bulan",
+    y = "Jumlah Kasus",
+    title = "Data Jumlah Kasus DBD Bulanan Kecamatan Banyumanik"
+  )
+
+ggplot(data = Data_Total, aes(x = Month, y = `SMG Barat`)) +
+  geom_line(color = '#B23122', lwd = 0.6) +
+  geom_point(color = '#B2182B') +
+  labs(
+    x = "Bulan",
+    y = "Jumlah Kasus",
+    title = "Data Jumlah Kasus DBD Bulanan Kecamatan Semarang Barat"
+  )
+```
+PEMBAGIAN DATA TRAINING DAN TESTING
+```{r}
+# Train-test split (90% train, 10% test)
+n <- length(ts.Data_Banyumanik)
+cutoff <- round(n * 0.9)
+h <- n - cutoff
+
+# Banyumanik
+data_train_Banyumanik <- window(ts.Data_Banyumanik, end = cutoff)
+data_test_Banyumanik <- window(ts.Data_Banyumanik, start = cutoff + 1)
+
+# SMG Barat
+data_train_SMGBarat <- window(ts.Data_SMGBarat, end = cutoff)
+data_test_SMGBarat <- window(ts.Data_SMGBarat, start = cutoff + 1)
+```
+PEMODELAN DERET WAKTU TANPA FAKTOR INTERVENSI DAN PENCILAN
+```{r}
+# ==== Banyumanik ====
+cat("=== BANYUMANIK ===\n")
+# Uji kestasioneran
+adf.test(data_train_Banyumanik)
+acf(data_train_Banyumanik, main="ACF - Banyumanik")
+
+# Differencing ke-1
+data_diff_Banyumanik <- diff(data_train_Banyumanik)
+
+# Uji ADF dan ACF-PACF hasil diferensiasi
+adf.test(data_diff_Banyumanik)
+acf(data_diff_Banyumanik, main = "ACF Diff - Banyumanik")
+pacf(data_diff_Banyumanik, main = "PACF Diff - Banyumanik")
+
+# ==== SMG Barat ====
+cat("\n=== SMG BARAT ===\n")
+# Uji kestasioneran
+adf.test(data_train_SMGBarat)
+acf(data_train_SMGBarat, main="ACF - SMG Barat")
+
+# Differencing ke-1
+data_diff_SMGBarat <- diff(data_train_SMGBarat)
+# Uji ADF dan ACF-PACF hasil diferensiasi
+adf.test(data_diff_SMGBarat)
+acf(data_diff_SMGBarat, main = "ACF Diff - SMG Barat")
+pacf(data_diff_SMGBarat, main = "PACF Diff - SMG Barat")
+```
+
+```{r}
+# =======================
+# === BANYUMANIK MODELS ===
+# =======================
+cat("=== BANYUMANIK MODELS ===\n")
+
+# Model 1: ARIMA(1,1,0)
+Model_Banyumanik_1 <- arima(data_train_Banyumanik, order = c(1,1,0))
+summary(Model_Banyumanik_1)
+
+# Model 2: auto.arima
+Model_Banyumanik_2 <- auto.arima(data_train_Banyumanik)
+summary(Model_Banyumanik_2)
+
+
+# =======================
+# === SMG BARAT MODELS ===
+# =======================
+cat("\n=== SMG BARAT MODELS ===\n")
+
+# Model 1: ARIMA(1,1,0)
+Model_SMGBarat_1 <- arima(data_train_SMGBarat, order = c(1,1,0))
+summary(Model_SMGBarat_1)
+
+# Model 2: auto.arima
+Model_SMGBarat_2 <- auto.arima(data_train_SMGBarat)
+summary(Model_SMGBarat_2)
+
+# Model 3: ARIMA(1,1,1)
+Model_SMGBarat_3 <- arima(data_train_SMGBarat, order = c(1,1,1))
+summary(Model_SMGBarat_3)
+```
+
+```{r}
+#Uji signifikansi parameter
+coeftest(Model_Banyumanik_2)
+coeftest(Model_SMGBarat_2)
+
+#Uji diagnostik
+checkresiduals(Model_Banyumanik_2, main = "Residuals Check - Banyumanik")
+checkresiduals(Model_SMGBarat_2, main = "Residuals Check - SMG Barat")
+ks.test(rstandard(Model_Banyumanik_2), 
+        pnorm(length(residuals(Model_Banyumanik_2)), mean=0, sd=1))
+ks.test(rstandard(Model_SMGBarat_2), 
+        pnorm(length(residuals(Model_SMGBarat_2)), mean=0, sd=1))
+```
+
+```{r}
+#Plot fitting
+data_train_ggplot <- head(Data_Total, n=65)
+
+fitted_Banyumanik <- fitted(Model_Banyumanik_2)
+fitted_SMGBarat <- fitted(Model_SMGBarat_2)
+
+plot_data <- data.frame(Tanggal = data_train_ggplot$Month, Train_Banyumanik= data_train_ggplot$Banyumanik, Train_SMGBarat=data_train_ggplot$`SMG Barat`,
+                        Fitted_Banyumanik = fitted_Banyumanik, Fitted_SMGBarat=fitted_SMGBarat)
+
+plot_data_long <- plot_data %>%
+  pivot_longer(cols = c(Train_Banyumanik, Fitted_Banyumanik, Train_SMGBarat, Fitted_SMGBarat),
+               names_to = "Series",
+               values_to = "Value") %>%
+  mutate(
+    Location = case_when(
+      Series %in% c("Train_Banyumanik", "Fitted_Banyumanik") ~ "Banyumanik",
+      Series %in% c("Train_SMGBarat", "Fitted_SMGBarat") ~ "SMG Barat"
+    ),
+    Type = case_when(
+      grepl("Train", Series) ~ "Train",
+      grepl("Fitted", Series) ~ "Fitted"
+    )
+  )
+
+# Plot with facets
+ggplot(plot_data_long, aes(x = Tanggal, y = Value, color = Type, linetype = Type)) +
+  geom_line(size = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~Location, scales = "free_y") +
+  scale_color_manual(values = c("Train" = "red", "Fitted" = "blue")) +
+  scale_linetype_manual(values = c("Train" = "solid", "Fitted" = "dashed")) +
+  labs(
+    title = "Perbandingan Data Train dan Fitted per Lokasi",
+    x = "Bulan ke-",
+    y = "Harga",
+    color = "Jenis Data",
+    linetype = "Jenis Data"
+  ) +
+  theme_minimal(base_size = 13)
+
+```
+
+```{r}
+#Forecasting
+predicted_Banyumanik <- forecast(fitted(Model_Banyumanik_2), h = h, level=c(80,95))
+predicted_SMGBarat <- forecast(fitted(Model_SMGBarat_2), h = h, level=c(80,95))
+
+plot(predicted_Banyumanik, main="Forecasting Model ARIMA(1,0,0)", ylab= "Jumlah Kasus DBD", col='blue',
+     lwd=1.5)
+points(fitted_Banyumanik, col='blue',pch=16, cex=0.5)
+points(ts.Data_Banyumanik, col ='red', pch=16, cex=0.5)
+lines(ts.Data_Banyumanik, col='red', lwd=1.5, lty=2)
+legend("bottomleft", legend = c('Jumlah Kasus DBD', 'Fitted values'),
+       lty=c(2,1), cex= 0.8,col=c('red','blue'), pch= c(19,19), lwd=2)
+
+plot(predicted_SMGBarat, main="Forecasting Model ARIMA(1,0,0)", ylab= "Jumlah Kasus DBD", col='blue',
+     lwd=1.5)
+points(fitted_SMGBarat, col='blue',pch=16, cex=0.5)
+points(ts.Data_SMGBarat, col ='red', pch=16, cex=0.5)
+lines(ts.Data_SMGBarat, col='red', lwd=1.5, lty=2)
+legend("bottomleft", legend = c('Jumlah Kasus DBD', 'Fitted values'),
+       lty=c(2,1), cex= 0.8,col=c('red','blue'), pch= c(19,19), lwd=2)
+
+#Perhitungan MAPE
+MAPE(predicted_Banyumanik$mean, data_test_Banyumanik)
+MAPE(predicted_SMGBarat$mean, data_test_SMGBarat)
+```
+PEMODELAN DERET WAKTU DENGAN FAKTOR PENCILAN
+```{r}
+#Deteksi pencilan
+detectAO(Model_Banyumanik_2)
+detectIO(Model_Banyumanik_2)
+
+detectAO(Model_SMGBarat_2)
+detectIO(Model_SMGBarat_2)
+```
+
+```{r}
+#Estimasi parameter model pencilan
+model_outlier <- arimax(data_train, order=c(0,1,1), 
+                         xreg=data.frame(ao132=1*(seq(data_train)==132), ao134=1*seq(data_train)==134), 
+                         io=c(133))
+summary(model_outlier)
+coeftest(model_outlier)
+
+#Uji diagnostik
+checkresiduals(model_outlier)
+ks.test(rstandard(model_outlier), 
+        pnorm(length(residuals(model_outlier)), mean=0, sd=1))
+
+#Tinjau efek pencilan AO132
+AO_132 <- ts(data.frame(AO132=1*(seq(data_train)==132)))
+efek_AO132 <- 223.1628*AO_132
+tanggal_train <- Data_Total[1:136,]
+plot_efek <- data.frame(Tanggal = tanggal_train$Tanggal, Efek=efek_AO132)
+ggplot(plot_efek, aes(x = Tanggal, y = AO132)) +
+  geom_segment(aes(xend = Tanggal, yend = 0)) +
+  labs(x = "Tanggal", y = "Efek") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(y="Efek Pencilan",title="Efek Pencilan AO pada T=132")
+
+#Tinjau efek pencilan AO134
+AO_134 <- ts(data.frame(AO134=1*(seq(data_train)==134)))
+efek_AO134 <- -187.1729*AO_134
+plot_efek134 <- data.frame(Tanggal = tanggal_train$Tanggal, Efek=efek_AO134)
+ggplot(plot_efek134, aes(x = Tanggal, y = AO134)) +
+  geom_segment(aes(xend = Tanggal, yend = 0)) +
+  labs(x = "Tanggal", y = "Efek") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(y="Efek Pencilan",title="Efek Pencilan AO pada T=134")
+
+#Tinjau efek pencilan IO133
+IO_133 <- as.numeric(seq(data_train) == 133)
+efek_IO133 <- IO_133*531.8007 + lag(IO_133)*(0.3442*531.8007)
+plot_efek133 <- data.frame(Tanggal = tanggal_train$Tanggal, Efek=efek_IO133)
+ggplot(plot_efek133, aes(x = Tanggal, y = Efek)) +
+  geom_segment(aes(xend = Tanggal, yend = 0)) +
+  labs(x = "Tanggal", y = "Efek") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  labs(y="Efek Pencilan",title="Efek Pencilan IO pada T=133")
+
+#Plot fitting
+fitted_values_outlier = fitted(model_outlier)
+plot_data_outlier <- data.frame(Tanggal = data_train_ggplot$Tanggal, Train= data_train_ggplot$Harga,
+                        Fitted = fitted_values_outlier)
+ggplot(plot_data_outlier, aes(x=as.Date(Tanggal)))+
+  geom_line(aes(y= Train, color='Train'), linetype = "solid")+
+  geom_point(aes(y=Train, color='Train'))+
+  geom_line(aes(y=Fitted, color='Fitted'),  linetype="dashed")+
+  geom_point(aes(y=Fitted, color='Fitted'))+
+  scale_color_manual(values = c(Train = "red", Fitted = "blue"),
+                     name = "Keterangan",
+                     labels = c(Train = "Data Train", Fitted = "Fitted Values"))+
+  scale_x_date(date_labels = "%Y-%m-%d")+
+  labs(x="Tanggal", y="Harga", title="Perbandingan Data Train vs Data Fitting")
+
+#Forecasting model outlier
+predicted_outlier <- forecast(fitted(model_outlier), h = h)
+plot(predicted_outlier, main="Forecasting Model ARIMA(0,1,1) dengan Faktor Pencilan", 
+     ylab= "Harga", col='blue', lwd= 1.5, lty=2)
+points(ts.Data_total, cex = .5, col ='red', pch = 16)
+lines(ts.Data_total, col='red', lwd=1.5, lty=1)
+legend("topleft", legend = c('Harga', 'Fitted values harga'),
+       cex=0.8, lty=c(1,2), col=c('red','blue'), pch= c(16,16))
+
+#Perhitungan MAPE
+MAPE(predicted_outlier$mean, data_test)
+```
+PEMODELAN DERET WAKTU DENGAN FAKTOR INTERVENSI DAN PENCILAN
+```{r}
+#Estimasi parameter
+model_gabungan = arimax(data_train, order=c(6,2,2),
+                          xtransf=Intervensi_lebaran, transfer=list(c(0,1)),
+                          xreg=data.frame(ao132=1*(seq(data_train)==132), 
+                                          ao134=1*seq(data_train)==134), 
+                          io=c(133),
+                          method ='ML')
+summary(model_gabungan)
+
+#Uji signifikansi parameter
+coeftest(model_gabungan)
+
+#Uji diagnostik
+checkresiduals(model_gabungan)
+ks.test(rstandard(model_gabungan), 
+        pnorm(length(residuals(model_gabungan)), mean=0, sd=1))
+
+#Plot fitting model gabungan
+fitted_values_gabungan = fitted(model_gabungan)
+plot_data_gabungan <- data.frame(Tanggal = data_train_ggplot$Tanggal, Train= data_train_ggplot$Harga,
+                        Fitted = fitted_values)
+ggplot(plot_data_gabungan, aes(x=as.Date(Tanggal)))+
+  geom_line(aes(y= Train, color='Train'), linetype = "solid")+
+  geom_point(aes(y=Train, color='Train'))+
+  geom_line(aes(y=Fitted, color='Fitted'),  linetype="dashed")+
+  geom_point(aes(y=Fitted, color='Fitted'))+
+  scale_color_manual(values = c(Train = "red", Fitted = "blue"),
+                     name = "Keterangan",
+                     labels = c(Train = "Data Train", Fitted = "Fitted Values"))+
+  scale_x_date(date_labels = "%Y-%m-%d")+
+  labs(x="Tanggal", y="Harga", title="Perbandingan Data Train vs Data Fitting")
+
+#Forecasting model gabungan
+predicted_gabungan <- forecast(fitted_values_gabungan, h = h, level=c(80,95))
+plot(predicted_gabungan, main="Forecasting Model ARIMA(6,2,1) dengan Faktor Intervensi dan Pencilan", ylab= "Harga", col='blue',
+     lwd=1.5)
+points(fitted_values_gabungan, col='blue',pch=16, cex=0.5)
+points(ts.Data_total, col ='red', pch=16, cex=0.5)
+lines(ts.Data_total, col='red', lwd=1.5, lty=2)
+legend("topleft", legend = c('Harga beras', 'Fitted values'),
+       lty=c(2,1), cex= 0.8,col=c('red','blue'), pch= c(19,19), lwd=2)
+
+#Perhitungan MAPE
+MAPE(predicted_gabungan$mean, data_test)
+```
